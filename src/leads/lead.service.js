@@ -1,200 +1,241 @@
 /**
- * SERVIÇO DE LEADS
+ * SERVIÇO DE LEADS - VERSÃO SQLITE
  * Responsável por CRUD de leads no banco de dados
  */
 
-// ⚠️ IMPORTANTE: Será implementado com banco de dados real (PostgreSQL)
-// Para agora, usando simulação em memória para testes
-
-let leadsDatabase = {}; // Simulação de banco (será substituído por PostgreSQL)
-
+const { db, prepare } = require("../config/db-sqlite");
 const { LEAD_STATUSES, formatLead, validateLead } = require("./lead.model");
 
 /**
  * Cria ou atualiza um lead (upsert)
- *
- * @param {object} leadData - Dados do lead
- * @param {string} leadData.phone - Telefone (obrigatório)
- * @param {string} leadData.name - Nome
- * @param {string} leadData.lastMessage - Última mensagem
- * @param {string} leadData.status - Status do lead
- * @param {Date} leadData.lastInteractionAt - Data da última interação
- * @returns {Promise<object>} - Lead criado/atualizado
  */
 async function upsertLead(leadData) {
   try {
-    // Validar dados
+    console.log(
+      "🔍 Dados recebidos no upsertLead:",
+      JSON.stringify(leadData, null, 2),
+    );
+
     const validation = validateLead(leadData);
     if (!validation.valid) {
       throw new Error(`Lead inválido: ${validation.errors.join(", ")}`);
     }
 
     const phone = leadData.phone;
-    const now = new Date();
+    const now = new Date().toISOString();
+    console.log("📅 Now:", now, typeof now);
 
-    if (leadsDatabase[phone]) {
-      // Atualizar lead existente
-      const existingLead = leadsDatabase[phone];
+    const existingLead = prepare("SELECT * FROM leads WHERE phone = ?").get(
+      phone,
+    );
 
-      leadsDatabase[phone] = {
-        ...existingLead,
-        name: leadData.name || existingLead.name,
-        lastMessage: leadData.lastMessage || existingLead.lastMessage,
-        status: leadData.status || existingLead.status,
-        lastInteractionAt: leadData.lastInteractionAt || now,
-        updatedAt: now,
-      };
+    if (existingLead) {
+      const updateStmt = prepare(`
+        UPDATE leads
+        SET name = ?, last_message = ?, status = ?, last_interaction_at = ?, updated_at = ?
+        WHERE phone = ?
+      `);
+
+      updateStmt.run(
+        leadData.name || existingLead.name,
+        leadData.lastMessage || existingLead.last_message,
+        leadData.status || existingLead.status,
+        now,
+        now,
+        phone,
+      );
 
       console.log(`📝 Lead atualizado: ${phone}`);
+      return getLeadByPhone(phone);
     } else {
-      // Criar novo lead
-      leadsDatabase[phone] = {
-        id: Object.keys(leadsDatabase).length + 1,
-        phone: phone,
-        name: leadData.name || null,
-        lastMessage: leadData.lastMessage || null,
-        status: leadData.status || LEAD_STATUSES.NOVO,
-        score: 0,
-        createdAt: now,
-        lastInteractionAt: leadData.lastInteractionAt || now,
-        updatedAt: now,
-        metadata: leadData.metadata || {},
-      };
+      const insertStmt = prepare(`
+        INSERT INTO leads (phone, name, last_message, status, qualification_score, is_hot_lead, created_at, updated_at, last_interaction_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      const result = insertStmt.run(
+        phone,
+        leadData.name || null,
+        leadData.lastMessage || null,
+        leadData.status || "new",
+        0,
+        0, // is_hot_lead como 0 em vez de false
+        now,
+        now,
+        now,
+      );
+
+      console.log("✅ Insert executado com sucesso");
 
       console.log(`✨ Novo lead criado: ${phone}`);
+      return getLeadById(result.lastInsertRowid);
     }
-
-    return leadsDatabase[phone];
   } catch (error) {
-    console.error("❌ Erro ao fazer upsert de lead:", error.message);
+    console.error("❌ Erro ao salvar lead:", error);
     throw error;
   }
 }
 
 /**
- * Busca um lead pelo telefone
- * @param {string} phone - Telefone do lead
- * @returns {Promise<object|null>}
+ * Busca lead por telefone
  */
-async function getLeadByPhone(phone) {
-  return leadsDatabase[phone] || null;
-}
-
-/**
- * Atualiza o status de um lead
- * @param {string} phone - Telefone
- * @param {string} newStatus - Novo status
- * @returns {Promise<object>}
- */
-async function updateLeadStatus(phone, newStatus) {
-  if (!Object.values(LEAD_STATUSES).includes(newStatus)) {
-    throw new Error(`Status inválido: ${newStatus}`);
+function getLeadByPhone(phone) {
+  try {
+    const stmt = prepare("SELECT * FROM leads WHERE phone = ?");
+    const lead = stmt.get(phone);
+    return lead ? formatLead(lead) : null;
+  } catch (error) {
+    console.error("❌ Erro ao buscar lead por telefone:", error);
+    throw error;
   }
-
-  if (!leadsDatabase[phone]) {
-    throw new Error(`Lead não encontrado: ${phone}`);
-  }
-
-  leadsDatabase[phone].status = newStatus;
-  leadsDatabase[phone].updatedAt = new Date();
-
-  console.log(`🏷️  Status do lead atualizado: ${phone} → ${newStatus}`);
-  return leadsDatabase[phone];
 }
 
 /**
- * Atualiza o score de um lead
- * @param {string} phone - Telefone
- * @param {number} scoreIncrease - Pontos a adicionar
- * @returns {Promise<object>}
+ * Busca lead por ID
  */
-async function updateLeadScore(phone, scoreIncrease) {
-  if (!leadsDatabase[phone]) {
-    throw new Error(`Lead não encontrado: ${phone}`);
+function getLeadById(id) {
+  try {
+    const stmt = prepare("SELECT * FROM leads WHERE id = ?");
+    const lead = stmt.get(id);
+    return lead ? formatLead(lead) : null;
+  } catch (error) {
+    console.error("❌ Erro ao buscar lead por ID:", error);
+    throw error;
   }
-
-  leadsDatabase[phone].score += scoreIncrease;
-  leadsDatabase[phone].updatedAt = new Date();
-
-  console.log(
-    `📊 Score do lead atualizado: ${phone} (${scoreIncrease > 0 ? "+" : ""}${scoreIncrease})`,
-  );
-  return leadsDatabase[phone];
 }
 
 /**
- * Lista todos os leads com filtros opcionais
- * @param {object} filters - Filtros
- * @param {string} filters.status - Filtrar por status
- * @param {number} filters.limit - Limite de resultados
- * @param {number} filters.offset - Offset para paginação
- * @returns {Promise<object[]>}
+ * Lista todos os leads
  */
-async function listLeads(filters = {}) {
-  let leads = Object.values(leadsDatabase);
-
-  if (filters.status) {
-    leads = leads.filter((lead) => lead.status === filters.status);
+async function getAllLeads() {
+  try {
+    const stmt = prepare(
+      "SELECT * FROM leads ORDER BY last_interaction_at DESC",
+    );
+    const leads = stmt.all();
+    return leads.map(formatLead);
+  } catch (error) {
+    console.error("❌ Erro ao listar leads:", error);
+    throw error;
   }
-
-  // Ordenar por última interação (mais recentes primeiro)
-  leads.sort(
-    (a, b) => new Date(b.lastInteractionAt) - new Date(a.lastInteractionAt),
-  );
-
-  const offset = filters.offset || 0;
-  const limit = filters.limit || 50;
-
-  return leads.slice(offset, offset + limit);
 }
 
 /**
- * Obtém estatísticas dos leads
- * @returns {Promise<object>}
+ * Atualiza status do lead
  */
-async function getLeadsStats() {
-  const leads = Object.values(leadsDatabase);
-  const stats = {
-    total: leads.length,
-    byStatus: {},
-  };
+async function updateLeadStatus(phone, status) {
+  try {
+    if (!Object.values(LEAD_STATUSES).includes(status)) {
+      throw new Error(`Status inválido: ${status}`);
+    }
 
-  Object.values(LEAD_STATUSES).forEach((status) => {
-    stats.byStatus[status] = leads.filter((l) => l.status === status).length;
-  });
+    const stmt = prepare(
+      "UPDATE leads SET status = ?, updated_at = ? WHERE phone = ?",
+    );
+    const result = stmt.run(status, new Date().toISOString(), phone);
 
-  return stats;
+    if (result.changes === 0) {
+      throw new Error(`Lead não encontrado: ${phone}`);
+    }
+
+    console.log(`📊 Status do lead ${phone} atualizado para: ${status}`);
+    return getLeadByPhone(phone);
+  } catch (error) {
+    console.error("❌ Erro ao atualizar status do lead:", error);
+    throw error;
+  }
 }
 
 /**
- * Deleta um lead (somente para testes)
- * @param {string} phone - Telefone
- * @returns {Promise<boolean>}
+ * Deleta lead
  */
 async function deleteLead(phone) {
-  if (leadsDatabase[phone]) {
-    delete leadsDatabase[phone];
-    console.log(`🗑️  Lead deletado: ${phone}`);
+  try {
+    const stmt = prepare("DELETE FROM leads WHERE phone = ?");
+    const result = stmt.run(phone);
+
+    if (result.changes === 0) {
+      throw new Error(`Lead não encontrado: ${phone}`);
+    }
+
+    console.log(`🗑️ Lead deletado: ${phone}`);
     return true;
+  } catch (error) {
+    console.error("❌ Erro ao deletar lead:", error);
+    throw error;
   }
-  return false;
 }
 
 /**
- * Limpa todos os leads (somente para testes)
+ * Salva uma conversa (mensagem + resposta)
  */
-async function clearAllLeads() {
-  leadsDatabase = {};
-  console.log("🧹 Todos os leads foram limpos");
+async function saveConversation(phone, message, response) {
+  try {
+    const lead = await getLeadByPhone(phone);
+    if (!lead) {
+      throw new Error(`Lead não encontrado: ${phone}`);
+    }
+
+    const insertStmt = prepare(`
+      INSERT INTO conversations (lead_id, message, response, direction, timestamp)
+      VALUES (?, ?, ?, 'incoming', ?)
+    `);
+
+    insertStmt.run(lead.id, message, response, new Date().toISOString());
+
+    console.log(`💬 Conversa salva para lead: ${phone}`);
+  } catch (error) {
+    console.error("❌ Erro ao salvar conversa:", error);
+    throw error;
+  }
+}
+
+/**
+ * Obtém histórico de conversas de um lead
+ */
+async function getConversationHistory(phone, limit = 10) {
+  try {
+    console.log(`📚 Buscando histórico para ${phone}`);
+    const lead = await getLeadByPhone(phone);
+    if (!lead) {
+      console.log(`📚 Lead não encontrado, retornando histórico vazio`);
+      return "";
+    }
+
+    console.log(`📚 Lead encontrado: ${lead.id}, buscando conversas...`);
+    const stmt = prepare(`
+      SELECT message, response, timestamp
+      FROM conversations
+      WHERE lead_id = ?
+      ORDER BY timestamp DESC
+      LIMIT ?
+    `);
+
+    const conversations = stmt.all(lead.id, limit);
+    console.log(`📚 Encontradas ${conversations.length} conversas`);
+
+    // Formatar histórico como string
+    const history = conversations
+      .reverse()
+      .map((conv) => `Cliente: ${conv.message}\nResposta: ${conv.response}`)
+      .join("\n\n");
+
+    console.log(`📚 Histórico formatado: ${history.length} caracteres`);
+    return history;
+  } catch (error) {
+    console.error("❌ Erro ao obter histórico de conversas:", error);
+    console.error("Stack:", error.stack);
+    return "";
+  }
 }
 
 module.exports = {
   upsertLead,
   getLeadByPhone,
+  getLeadById,
+  getAllLeads,
   updateLeadStatus,
-  updateLeadScore,
-  listLeads,
-  getLeadsStats,
   deleteLead,
-  clearAllLeads,
+  saveConversation,
+  getConversationHistory,
 };

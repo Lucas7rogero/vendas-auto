@@ -6,18 +6,25 @@
 const { generateResponse } = require("../ai/gemini.service");
 const { buildSalesPrompt, buildHotLeadPrompt } = require("./sales.prompts");
 const { qualifyLead, getLeadStatus } = require("./lead.qualifier");
-const { upsertLead, updateLeadStatus } = require("../leads/lead.service");
+const {
+  upsertLead,
+  updateLeadStatus,
+  saveConversation,
+  getConversationHistory,
+} = require("../leads/lead.service");
 
 /**
  * Processa mensagem recebida no WhatsApp
  *
  * FLUXO:
  * 1. Valida mensagem
- * 2. Qualifica lead (verifica se é quente)
- * 3. Prepara prompt dinâmico
- * 4. Chama IA (Gemini)
- * 5. Salva lead no banco
- * 6. Retorna resposta formatada
+ * 2. Salva/Atualiza lead no banco
+ * 3. Busca histórico de conversas
+ * 4. Qualifica lead (verifica se é quente)
+ * 5. Prepara prompt dinâmico
+ * 6. Chama IA (Gemini)
+ * 7. Salva conversa
+ * 8. Retorna resposta formatada
  *
  * @param {object} messageData - Dados da mensagem recebida
  * @param {string} messageData.phone - Telefone do cliente
@@ -30,8 +37,11 @@ async function handleIncomingMessage(messageData) {
   try {
     const { phone, message, senderName, timestamp } = messageData;
 
+    console.log("📨 Iniciando processamento de mensagem...");
+
     // Validação básica
     if (!phone || !message) {
+      console.log("❌ Dados incompletos");
       return {
         success: false,
         error: "Dados incompletos: phone e message são obrigatórios",
@@ -39,10 +49,28 @@ async function handleIncomingMessage(messageData) {
       };
     }
 
-    console.log(`\n📨 Mensagem recebida de ${senderName || phone}`);
-    console.log(`   Texto: "${message}"`);
+    console.log(`✅ Dados válidos: ${phone}, "${message}"`);
 
-    // 1️⃣ QUALIFICAR LEAD
+    // 1️⃣ SALVAR/ATUALIZAR LEAD NO BANCO (sempre no início)
+    const leadData = {
+      phone,
+      name: senderName || null,
+      lastMessage: message,
+      status: "novo", // status inicial, será atualizado depois da qualificação
+    };
+
+    const savedLead = await upsertLead(leadData);
+    console.log(`💾 Lead salvo: ${savedLead.id || phone}`);
+
+    // 2️⃣ BUSCAR HISTÓRICO DE CONVERSAS
+    console.log(`📚 Buscando histórico para ${phone}`);
+    const conversationHistory = await getConversationHistory(phone);
+    console.log(
+      `📚 Histórico encontrado: ${conversationHistory.length} mensagens`,
+    );
+
+    // 3️⃣ QUALIFICAR LEAD
+    console.log("🔍 Qualificando lead...");
     const qualification = qualifyLead(message);
     const leadStatus = getLeadStatus(qualification);
     const isHotLead = qualification.isHot;
@@ -52,38 +80,41 @@ async function handleIncomingMessage(messageData) {
     );
     console.log(`   Motivo: ${qualification.reason}`);
 
-    // 2️⃣ PREPARAR PROMPT DINÂMICO
+    // 4️⃣ ATUALIZAR STATUS DO LEAD APÓS QUALIFICAÇÃO
+    await updateLeadStatus(phone, leadStatus);
+    console.log(`📊 Status do lead atualizado: ${leadStatus}`);
+
+    // 5️⃣ PREPARAR PROMPT DINÂMICO
     let prompt;
     if (isHotLead) {
       console.log("⚡ Lead QUENTE detectado! Usando prompt agressivo...");
       prompt = buildHotLeadPrompt(message, senderName);
     } else {
-      prompt = buildSalesPrompt(message, senderName);
+      prompt = buildSalesPrompt(message, senderName, conversationHistory);
     }
 
-    // 3️⃣ CHAMAR IA
+    console.log("📝 Prompt construído:", prompt.substring(0, 100) + "...");
+
+    // 6️⃣ CHAMAR IA
     console.log("🤖 Chamando Gemini...");
-    const aiResponse = await generateResponse(prompt);
+    let aiResponse;
+    try {
+      aiResponse = await generateResponse(prompt);
+      console.log(`✅ Resposta gerada: "${aiResponse}"`);
+    } catch (aiError) {
+      console.error("❌ Erro na IA:", aiError);
+      throw new Error(`IA falhou: ${aiError.message}`);
+    }
 
     if (!aiResponse || aiResponse.includes("Erro")) {
       throw new Error("IA retornou erro ou resposta vazia");
     }
 
-    console.log(`✅ Resposta gerada:\n   "${aiResponse}"`);
+    // 7️⃣ SALVAR CONVERSA
+    await saveConversation(phone, message, aiResponse);
+    console.log("💬 Conversa salva com sucesso");
 
-    // 4️⃣ SALVAR LEAD NO BANCO
-    const leadData = {
-      phone,
-      name: senderName || null,
-      lastMessage: message,
-      status: leadStatus,
-      lastInteractionAt: new Date(timestamp * 1000 || Date.now()),
-    };
-
-    const savedLead = await upsertLead(leadData);
-    console.log(`💾 Lead salvo: ${savedLead.id || phone}`);
-
-    // 5️⃣ RETORNAR RESPOSTA FORMATADA
+    // 8️⃣ RETORNAR RESPOSTA FORMATADA
     return {
       success: true,
       response: aiResponse,

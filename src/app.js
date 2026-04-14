@@ -7,7 +7,7 @@ const express = require("express");
 require("dotenv").config();
 
 const whatsappWebhook = require("./webhooks/whatsapp.webhook");
-const { handleTestMessage } = require("./sales/sales.workflow");
+const { handleIncomingMessage } = require("./sales/sales.workflow");
 const {
   listLeads,
   getLeadsStats,
@@ -77,7 +77,14 @@ app.post("/test-message", async (req, res) => {
     console.log(`Mensagem: "${message}"`);
     console.log(`Cliente: ${senderName}`);
 
-    const result = await handleTestMessage(message, senderName, phone);
+    const result = await handleIncomingMessage({
+      phone,
+      message,
+      senderName,
+      timestamp: Date.now() / 1000,
+    });
+
+    console.log("Resultado:", result);
 
     res.json({
       success: result.success,
@@ -87,11 +94,15 @@ app.post("/test-message", async (req, res) => {
       metadata: result.metadata,
     });
   } catch (error) {
-    console.error("❌ Erro ao testar mensagem:", error);
+    console.error("❌ ERRO GERAL na rota test-message:", error);
+    console.error("Stack:", error.stack);
 
     res.status(500).json({
-      error: "Erro ao processar mensagem",
+      error: "Erro interno do servidor",
       details: error.message,
+      success: false,
+      leadStatus: "novo",
+      response: "Desculpe, tive um problema técnico. Pode tentar novamente?",
     });
   }
 });
@@ -102,14 +113,8 @@ app.post("/test-message", async (req, res) => {
 
 app.get("/leads", async (req, res) => {
   try {
-    const { status, limit = 50, offset = 0 } = req.query;
-
-    const leads = await listLeads({
-      status: status || undefined,
-      limit: parseInt(limit),
-      offset: parseInt(offset),
-    });
-
+    const leadService = require("./leads/lead.service");
+    const leads = await leadService.getAllLeads();
     res.json({
       count: leads.length,
       leads,
@@ -175,7 +180,7 @@ if (process.env.NODE_ENV !== "production") {
       for (const conversation of testConversations) {
         const result = await handleTestMessage(
           conversation.message,
-          conversation.senderName
+          conversation.senderName,
         );
 
         results.push({
